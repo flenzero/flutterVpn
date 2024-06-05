@@ -43,9 +43,19 @@ std::string getEnvVar(const std::string& var) {
     return value;
 }
 
+std::string getCurrentDirectory() {
+    char buffer[MAX_PATH];
+    DWORD size = GetCurrentDirectoryA(MAX_PATH, buffer);
+    if (size > 0 && size < MAX_PATH) {
+        return std::string(buffer);
+    } else {
+        return std::string();
+    }
+}
+
 std::string generateSSLocalConfig(const std::string& netID, const std::string& ip, int port, const std::string& method, const std::string& password) {
     try {
-        std::string basePath = getEnvVar("APPDATA");
+        std::string basePath = getCurrentDirectory();
         std::string configFile = basePath + "\\sslocal.conf";
         json configJson;
         configJson["local_address"] = "0.0.0.0";
@@ -113,33 +123,23 @@ std::vector<std::string> getNetIDs(bool filter = true) {
 
     PIP_ADAPTER_ADDRESSES pAdapter = pAdapterAddresses;
     while (pAdapter) {
-        std::string adapterName = ConvertWCHARToString(pAdapter->FriendlyName);
-        //打印网卡信息
-        // std::cout << "Adapter Name: " << ConvertWCHARToString(pAdapter->FriendlyName) << std::endl;
-        // std::cout << "Adapter Description: " << ConvertWCHARToString(pAdapter->Description) << std::endl;
-        // std::cout << "Adapter Index: " << pAdapter->IfIndex << std::endl;
-        // std::cout << "Adapter Type: " << pAdapter->IfType << std::endl;
-        // std::cout << "Adapter Operational Status: " << pAdapter->OperStatus << std::endl;
-        // std::cout << "Adapter Physical Address: " << pAdapter->PhysicalAddress << std::endl;
-        // std::cout << "Adapter Flags: " << pAdapter->Flags << std::endl;
-        // std::cout << "Adapter Mtu: " << pAdapter->Mtu << std::endl;
-        // std::cout << "Adapter IfType: " << pAdapter->IfType << std::endl;
-        // std::cout << "Adapter DnsSuffix: " << ConvertWCHARToString(pAdapter->DnsSuffix) << std::endl;
-        // std::cout << std::endl;
+        if (pAdapter->OperStatus == IfOperStatusUp) { 
+            std::string adapterName = ConvertWCHARToString(pAdapter->FriendlyName);
 
-        std::string adapterDescription = ConvertWCHARToString(pAdapter->Description);
-        std::for_each(adapterDescription.begin(), adapterDescription.end(), [](char& c) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        });
+            std::string adapterDescription = ConvertWCHARToString(pAdapter->Description);
+            std::for_each(adapterDescription.begin(), adapterDescription.end(), [](char& c) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            });
 
-        if (!filter || (adapterDescription.find("virtual") == std::string::npos &&
-                        adapterDescription.find("tap") == std::string::npos &&
-                        adapterDescription.find("vpn") == std::string::npos &&
-                        adapterDescription.find("tun") == std::string::npos &&
-                        adapterDescription.find("meta") == std::string::npos &&
-                        adapterDescription.find("vethernet") == std::string::npos &&
-                        adapterDescription.find("radmin") == std::string::npos)) {
-            netIds.push_back(adapterName);
+            if (!filter || (adapterDescription.find("virtual") == std::string::npos &&
+                            adapterDescription.find("tap") == std::string::npos &&
+                            adapterDescription.find("vpn") == std::string::npos &&
+                            adapterDescription.find("tun") == std::string::npos &&
+                            adapterDescription.find("meta") == std::string::npos &&
+                            adapterDescription.find("vethernet") == std::string::npos &&
+                            adapterDescription.find("radmin") == std::string::npos)) {
+                netIds.push_back(adapterName);
+            }
         }
 
         pAdapter = pAdapter->Next;
@@ -249,7 +249,7 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
     shExInfo.cbSize = sizeof(SHELLEXECUTEINFOW);
     shExInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
     shExInfo.hwnd = NULL;
-    shExInfo.lpVerb = L"runas"; // This is the key to run as administrator
+    shExInfo.lpVerb = L"runas";
     shExInfo.lpFile = executable.c_str();
     shExInfo.lpParameters = cmdLine.c_str();
     shExInfo.lpDirectory = NULL;
@@ -280,7 +280,7 @@ void monitorProcess(PROCESS_INFORMATION& processInfo) {
             std::cerr << "Failed to get exit code for process " << processInfo.dwProcessId << "\n";
             break;
         }
-        Sleep(1000);  // Sleep for 1 second before checking again
+        Sleep(1000);
     }
 }
 
@@ -299,7 +299,7 @@ void stopProcess(PROCESS_INFORMATION& processInfo) {
 }
 
 void startSslocal1(const std::string& ip, int port, const std::string& password, const std::string& method, const std::string& netID, bool global) {
-    std::wstring _path = stringToWString(getEnvVar("APPDATA"));
+    std::wstring _path = stringToWString(getCurrentDirectory());
     std::vector<std::wstring> args;
 
     std::wstring sslocal_config = stringToWString(generateSSLocalConfig(netID, ip, port, method, password));
@@ -327,7 +327,7 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
 }
 
 void startTun2Socks(const std::string& netID) {
-    std::wstring _path = stringToWString(getEnvVar("APPDATA"));
+    std::wstring _path = stringToWString(getCurrentDirectory());
     std::vector<std::wstring> args;
 
     args.push_back(L"-device");
@@ -376,9 +376,20 @@ void netshCommand2() {
     startProcess(processInfo, executable, args);
 }
 
+std::string removeNullChars(const std::string& str) {
+    std::string cleanedStr;
+    for (char c : str) {
+        if (c != '\0') {
+            cleanedStr += c;
+        }
+    }
+    return cleanedStr;
+}
+
 void connectVpn(const std::string& ip, int port, const std::string& uuid, const std::string& method, bool global) {
     try {
         std::string netID = getNetID();
+        netID = removeNullChars(netID);
         std::cout << "启动开始\n" << std::endl;
         std::cout << "@@@ " << netID << std::endl;
         vpnConfig["netID"] = netID;
@@ -386,7 +397,7 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
         tun2socksRetry = 0;
         sky_port = getRandomInt(5000, 60000);
         std::cout << "sky_port: " << sky_port << std::endl;
-        startSslocal1(ip, sky_port, uuid, method, netID, global);
+        startSslocal1(ip, port, uuid, method, netID, global);
         startTun2Socks(netID);
         // std::this_thread::sleep_for(std::chrono::seconds(600));
         try {
