@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <tlhelp32.h>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -245,6 +247,14 @@ std::wstring stringToWString(const std::string& str) {
     return wstrTo;
 }
 
+std::wstring remove_suffix(const std::wstring& wstr) {
+    size_t lastDot = wstr.rfind(L'.');
+    if (lastDot != std::wstring::npos) {
+        return wstr.substr(0, lastDot);
+    }
+    return wstr;
+}
+
 bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executable, const std::vector<std::wstring>& args) {
     logInfo("Starting process: " + wstringToString(executable));
 
@@ -255,13 +265,25 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
         cmdLine += L" " + arg;
     }
 
-    SHELLEXECUTEINFOW shExInfo = {0};
+    std::wstring executableStr = remove_suffix(executable);
+    std::wstring logFile = stringToWString(wstringToString(executableStr) + ".log");
+    logInfo("Log file: " + wstringToString(logFile));
+
+    std::wstring fullCmdLine = executable + cmdLine;
+    if (wstringToString(executable).find("netsh") == std::string::npos) {
+        fullCmdLine += L" >> " + logFile + L" 2>&1";
+    }
+
+
+    SHELLEXECUTEINFOW shExInfo;
+    ZeroMemory(&shExInfo, sizeof(shExInfo));
     shExInfo.cbSize = sizeof(SHELLEXECUTEINFOW);
-    shExInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+    shExInfo.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
     shExInfo.hwnd = NULL;
     shExInfo.lpVerb = L"runas";
-    shExInfo.lpFile = executable.c_str();
-    shExInfo.lpParameters = cmdLine.c_str();
+    shExInfo.lpFile = L"cmd.exe";
+    std::wstring localCmdParams = L"/C \"" + fullCmdLine + L"\"";
+    shExInfo.lpParameters = localCmdParams.c_str();
     shExInfo.lpDirectory = NULL;
     shExInfo.nShow = SW_HIDE;
     shExInfo.hInstApp = NULL;
@@ -273,21 +295,59 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
     processInfo.hProcess = shExInfo.hProcess;
     processInfo.dwProcessId = GetProcessId(shExInfo.hProcess);
 
-    logInfo("Started process " + std::to_string(processInfo.dwProcessId) + " with command line: " + wstringToString(executable) + " " + wstringToString(cmdLine) + " as administrator.");
+    logInfo("Started process " + std::to_string(processInfo.dwProcessId) + " with command line: cmd.exe " + wstringToString(localCmdParams));
+
+
     return true;
 }
 
-void stopProcess(PROCESS_INFORMATION& processInfo) {
-    if (processInfo.hProcess != NULL) {
-        TerminateProcess(processInfo.hProcess, 0);
-        CloseHandle(processInfo.hProcess);
-        CloseHandle(processInfo.hThread);
-        processInfo.hProcess = NULL;
-        processInfo.hThread = NULL;
-        logInfo("Process " + std::to_string(processInfo.dwProcessId) + " terminated");
+std::vector<PROCESSENTRY32> GetChildProcesses(DWORD parentProcessId) {
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        throw VpnException(1008, "Failed to create snapshot");
     }
-    else{
-        logInfo("Process " + std::to_string(processInfo.dwProcessId) + " already terminated");
+
+    PROCESSENTRY32 pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    std::vector<PROCESSENTRY32> childProcesses;
+
+    if (Process32First(hSnapshot, &pe32)) {
+        do {
+            if (pe32.th32ParentProcessID == parentProcessId) {
+                childProcesses.push_back(pe32);
+            }
+        } while (Process32Next(hSnapshot, &pe32));
+    } else {
+        CloseHandle(hSnapshot);
+        throw VpnException(1009, "Failed to enumerate processes");
+    }
+
+    CloseHandle(hSnapshot);
+    return childProcesses;
+}
+
+void TerminateProcessTree(PROCESS_INFORMATION& processInfo) {
+    DWORD parentProcessId = processInfo.dwProcessId;
+    
+    std::vector<PROCESSENTRY32> childProcesses = GetChildProcesses(parentProcessId);
+
+    for (const auto& child : childProcesses) {
+        PROCESS_INFORMATION childProcessInfo;
+        childProcessInfo.dwProcessId = child.th32ProcessID;
+        TerminateProcessTree(childProcessInfo);
+    }
+
+    HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, parentProcessId);
+    if (hProcess) {
+        if (TerminateProcess(hProcess, 1)) {
+            logInfo("Terminated process PID: " + std::to_string(parentProcessId));
+            processInfo.hProcess = NULL;
+            processInfo.hThread = NULL;
+        } else {
+            logInfo("process PID: " + std::to_string(parentProcessId) + " already terminated");
+        }
+        CloseHandle(hProcess);
     }
 }
 
@@ -337,29 +397,17 @@ void handleSslocalExit(int code, const std::string& signal, const std::string& i
     std::string basePath = getCurrentDirectory();
     std::string configFile = basePath + "\\sslocal.conf";
 
-    if (code == 0) {
-        logInfo("SSLocal1 Process terminated successfully");
-        deleteFile(stringToWString(configFile));
-        return;
-    }
-
-    if (code == 3 && !connected) {
-        logInfo("SSLocal1 Process terminated successfully");
-        deleteFile(stringToWString(configFile));
-        return;
-    }
-
-    logError("SSLocal1 Process terminated with code " + std::to_string(code));
-
     if (connected && !isSuspending && sslocalRetry < maxRetryAttempts) {
         sslocalRetry++;
         int waitTime = 3000 * sslocalRetry;
         logInfo("Retrying startSslocal1 in " + std::to_string(waitTime) + "ms (Attempt " + std::to_string(sslocalRetry) + "/" + std::to_string(maxRetryAttempts) + ")");
         Sleep(waitTime);
         startSslocal1(ip, port, password, method, netID, global);
+    } else if ( sslocalRetry >= maxRetryAttempts ){
+        deleteFile(stringToWString(configFile));
+        vpnStop(2);
     } else {
         deleteFile(stringToWString(configFile));
-        vpnStop(1);
     }
 }
 
@@ -391,32 +439,19 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
 }
 
 void handleTun2SocksExit(int code, const std::string& signal, const std::string& netID) {
-    if (code == 0) {
-        logInfo("Tun2Socks Process terminated successfully");
-        return;
-    }
-
-    if (code == 3 && !connected) {
-        logInfo("Tun2Socks Process terminated successfully");
-        return;
-    }
-
-    logError("Tun2Socks Process terminated with code " + std::to_string(code));
-
     if (connected && !isSuspending && tun2socksRetry < maxRetryAttempts) {
         tun2socksRetry++;
-        int waitTime = 3000 * tun2socksRetry; 
+        int waitTime = 6000 * tun2socksRetry; 
         logInfo("Retrying startTun2Socks in " + std::to_string(waitTime) + "ms (Attempt " + std::to_string(tun2socksRetry) + "/" + std::to_string(maxRetryAttempts) + ")");
         Sleep(waitTime);
         startTun2Socks(netID);
-        logInfo("启动netsh命令开始\n");
-        // netshCommand1();
-        // netshCommand2();
-        logInfo("启动netsh命令完成\n");
-    } else {
-        vpnStop(2);
+        logInfo("netsh command start");
+        netshCommand1();
+        netshCommand2();
+        logInfo("netsh command end");
+    } else if ( tun2socksRetry >= maxRetryAttempts ){
+        vpnStop(3);
     }
-    logInfo("connect: " + std::to_string(connected) + " isSuspending: " + std::to_string(isSuspending));
 }
 
 void startTun2Socks(const std::string& netID) {
@@ -443,13 +478,12 @@ void startTun2Socks(const std::string& netID) {
     }
 }
 
-
 void stopSslocal1() {
-    stopProcess(sslocal1Process);
+    TerminateProcessTree(sslocal1Process);
 }
 
 void stopTun2socks() {
-    stopProcess(tun2socksProcess);
+    TerminateProcessTree(tun2socksProcess);
 }
 
 std::string removeNullChars(const std::string& str) {
@@ -480,12 +514,12 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
             std::this_thread::sleep_for(std::chrono::seconds(3));
             retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1010, "vpn NetID not found"); }, 2, 3000);
             logInfo("netsh command start");
-            // netshCommand1();
-            // netshCommand2();
+            netshCommand1();
+            netshCommand2();
             logInfo("netsh command end");
         } catch (const VpnException& e) {
             logError("netsh command failed: " + std::string(e.what()));
-            vpnStop(0);
+            vpnStop(1);
             throw;
         }
 
@@ -594,14 +628,21 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
 }
 
 int vpnStop(int stopType) {
+    if (vpnStopping) {
+        logInfo("VPN already stopping");
+        return 0;
+    }
     if (stopType == 0) {
-        logError("vpnStop called with first nesth failed");
+        logInfo("try to stop vpn");
     }
     if (stopType == 1) {
-        logError("vpnStop called with second nesth failed");
+        logError("vpnStop called with first nesth failed, stop all process");
     }
     if (stopType == 2) {
-        logError("vpnStop called with tun2socks failed");
+        logError("vpnStop called with ssLocal1 failed, stop all process");
+    }
+    if (stopType == 3) {
+        logError("vpnStop called with tun2socks failed, stop all process");
     }
     vpnStopping = true;
     connected = false;

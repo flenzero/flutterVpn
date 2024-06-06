@@ -77,7 +77,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
               result->Error("Invalid arguments", "Invalid arguments for vpnStart");
             }
           } else if (call.method_name().compare("vpnStop") == 0) {
-            int stopResult = vpnStop(1);
+            int stopResult = vpnStop(0);
             if (stopResult == 0) {
               result->Success(flutter::EncodableValue(0));
             } else {

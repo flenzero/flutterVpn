@@ -27,7 +27,7 @@ private:
 // Ensure that the functions are exported correctly for use with MethodChannel
 extern "C" {
     __declspec(dllexport) const char* vpnStart(const char* tunId, const char* uuid, const char* host, int port, const char* method, int global);
-    __declspec(dllexport) int vpnStop(int global);
+    __declspec(dllexport) int vpnStop(int stopType = 0);
     __declspec(dllexport) bool vpnCheck();
 }
 
