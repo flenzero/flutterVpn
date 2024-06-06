@@ -21,6 +21,7 @@
 #pragma comment(lib, "iphlpapi.lib")
 
 using json = nlohmann::json;
+using ordered_json = nlohmann::ordered_json;
 
 int sky_port = 55655;
 bool vpnStopping = false;
@@ -57,7 +58,7 @@ std::string generateSSLocalConfig(const std::string& netID, const std::string& i
     try {
         std::string basePath = getCurrentDirectory();
         std::string configFile = basePath + "\\sslocal.conf";
-        json configJson;
+        ordered_json configJson;
         configJson["local_address"] = "0.0.0.0";
         configJson["local_port"] = sky_port;
         configJson["mode"] = "tcp_and_udp";
@@ -80,7 +81,7 @@ std::string generateSSLocalConfig(const std::string& netID, const std::string& i
         configJson["password"] = password;
 
         std::ofstream configFileStream(configFile);
-        configFileStream << configJson.dump(4);
+        configFileStream << configJson.dump(-1);
         configFileStream.close();
 
         return configFile;
