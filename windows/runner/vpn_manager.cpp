@@ -26,6 +26,8 @@ using ordered_json = nlohmann::ordered_json;
 int sky_port = 55655;
 bool vpnStopping = false;
 bool vpnConnected = false;
+bool connected = true;
+bool isSuspending = false;
 int sslocalRetry = 0;
 int tun2socksRetry = 0;
 PROCESS_INFORMATION sslocal1Process;
@@ -268,13 +270,14 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
     return true;
 }
 
-void monitorProcess(PROCESS_INFORMATION& processInfo) {
+void monitorProcess(PROCESS_INFORMATION& processInfo, void(*exitHandler)(int, const std::string&)) {
     while (true) {
         DWORD exitCode;
         if (GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
             if (exitCode != STILL_ACTIVE) {
-                std::cout << "Process " << processInfo.dwProcessId << " exited with code " << exitCode << std::endl;
+                std::wcout << L"Process " << processInfo.dwProcessId << " exited with code " << exitCode << std::endl;
                 CloseHandle(processInfo.hProcess);
+                exitHandler(exitCode, "SIGTERM");
                 break;
             }
         } else {
@@ -299,6 +302,58 @@ void stopProcess(PROCESS_INFORMATION& processInfo) {
     }
 }
 
+void deleteFile(const std::wstring& filePath) {
+    std::filesystem::path path(filePath);
+    if (std::filesystem::exists(path)) {
+        std::filesystem::remove(path);
+    }
+}
+
+void handleSslocalExit(int code, const std::string& signal) {
+    if (code == 0 || signal == "SIGTERM") {
+        // Process exited successfully
+    } else if (code) {
+        throw std::runtime_error("SSLocal1 Process terminated by non-zero exit code: " + std::to_string(code));
+    } else {
+        throw std::runtime_error("SSLocal1 Process terminated by signal: " + signal);
+    }
+    if (vpnConnected && !isSuspending) {
+        if (sslocalRetry <= 3) {
+            sslocalRetry++;
+            Sleep(3000);
+            startSslocal1("vpnConfig.ip", 8388, "vpnConfig.uuid", "vpnConfig.method", "vpnConfig.netID", true);
+        } else {
+            deleteFile(L"path\\to\\sslocal.conf");
+            // vpnStop(1);  // Implement vpnStop function as needed
+        }
+    } else {
+        deleteFile(L"path\\to\\sslocal.conf");
+    }
+}
+
+void handleTun2SocksExit(int code, const std::string& signal) {
+    if (code == 0 || signal == "SIGTERM") {
+        // Process exited successfully
+    } else if (code) {
+        throw std::runtime_error("Tun2Socks Process terminated by non-zero exit code: " + std::to_string(code));
+    } else {
+        throw std::runtime_error("Tun2Socks Process terminated by signal: " + signal);
+    }
+    if (vpnConnected && !isSuspending) {
+        if (tun2socksRetry <= 3) {
+            tun2socksRetry++;
+            Sleep(3000);
+            startTun2Socks("vpnConfig.netID");
+            std::wcout << L"启动netsh命令开始\n" << std::endl;
+            // netshCommand1();
+            // netshCommand2();
+            std::wcout << L"启动netsh命令完成" << std::endl;
+        } else {
+            // vpnStop(0);  // Implement vpnStop function as needed
+        }
+    }
+}
+
 void startSslocal1(const std::string& ip, int port, const std::string& password, const std::string& method, const std::string& netID, bool global) {
     std::wstring _path = stringToWString(getCurrentDirectory());
     std::vector<std::wstring> args;
@@ -320,9 +375,8 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
     }
 
     std::wstring execProcess = _path + L"\\core\\sslocal.exe";
-    if (startProcess(sslocal1Process, execProcess, args))
-    {
-        std::thread monitorThread(monitorProcess, std::ref(sslocal1Process));
+    if (startProcess(sslocal1Process, execProcess, args)) {
+        std::thread monitorThread(monitorProcess, std::ref(sslocal1Process), handleSslocalExit);
         monitorThread.detach();
     }
 }
@@ -337,20 +391,14 @@ void startTun2Socks(const std::string& netID) {
     args.push_back(L"socks5://127.0.0.1:" + std::to_wstring(sky_port));
     args.push_back(L"-interface");
     args.push_back(stringToWString(netID));
-    // std::wcout << L"netID: " << strinqgToWString(netID) << "\n" << std::endl;
-
-    // for (const auto& arg : args) {
-    //     std::wcout << arg << std::endl;
-    // }
-
+    
     if (vpnStopping) {
         return;
     }
 
     std::wstring execProcess = _path + L"\\core\\tun2socks.exe";
-    if (startProcess(tun2socksProcess, execProcess, args))
-    {
-        std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess));
+    if (startProcess(tun2socksProcess, execProcess, args)) {
+        std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess), handleTun2SocksExit);
         monitorThread.detach();
     }
 }
@@ -405,8 +453,8 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
             std::this_thread::sleep_for(std::chrono::seconds(3));
             retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1010, "NetID not found"); }, 2, 3000);
             std::cout << "启动netsh命令开始\n" << std::endl;
-            netshCommand1();
-            netshCommand2();
+            // netshCommand1();
+            // netshCommand2();
             std::cout << "启动netsh命令完成" << std::endl;
         } catch (const VpnException& e) {
             std::cerr << "netsh 失败: " << e.what() << "\n";
