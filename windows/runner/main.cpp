@@ -83,12 +83,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
             } else {
               result->Error("1", "Failed to stop VPN", flutter::EncodableValue(""));
             }
-          } else if (call.method_name().compare("checkVpn") == 0) {
-            bool status = checkVpn();
+          } else if (call.method_name().compare("vpnCheck") == 0) {
+            bool status = vpnCheck();
             if (status) {
-              result->Success(flutter::EncodableValue(0));
+              result->Success(flutter::EncodableValue(true)); 
             } else {
-              result->Error("1", "VPN is not connected", flutter::EncodableValue(""));
+              result->Success(flutter::EncodableValue(false)); 
             }
           } else {
             result->NotImplemented();

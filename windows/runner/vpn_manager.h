@@ -28,7 +28,7 @@ private:
 extern "C" {
     __declspec(dllexport) const char* vpnStart(const char* tunId, const char* uuid, const char* host, int port, const char* method, int global);
     __declspec(dllexport) int vpnStop(int global);
-    __declspec(dllexport) bool checkVpn();
+    __declspec(dllexport) bool vpnCheck();
 }
 
 #endif  // VPN_MANAGER_H_

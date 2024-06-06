@@ -1,3 +1,6 @@
 {
-    "cmake.sourceDirectory": "H:/Project/FlutterVpn/linux"
+    "cmake.sourceDirectory": "H:/Project/FlutterVpn/linux",
+    "files.associations": {
+        "thread": "cpp"
+    }
 }

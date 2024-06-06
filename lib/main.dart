@@ -90,6 +90,21 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     }
   }
 
+  void _checkVpn() async {
+    try {
+      final bool result = await platform.invokeMethod('vpnCheck');
+      if (result) {
+        print('VPN is running');
+      } else {
+        print('VPN is not running');
+      }
+    } on PlatformException catch (e) {
+      print('Failed to check VPN: ${e.message}');
+      print('Error Code: ${e.code}');
+      print('Error Details: ${e.details}');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -109,6 +124,11 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
               onPressed: _stopVpn,
               child: Text('Stop VPN'),
             ),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _checkVpn, 
+              child: Text('Check VPN'),
+            )
           ],
         ),
       ),
