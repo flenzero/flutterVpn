@@ -508,8 +508,8 @@ void handleTun2SocksExit(int code, const std::string& signal, const std::string&
         Sleep(waitTime);
         startTun2Socks(netID);
         logInfo("netsh command start");
-        // netshCommand1();
-        // netshCommand2();
+        netshCommand1();
+        netshCommand2();
         logInfo("netsh command end");
     } else if ( tun2socksRetry >= maxRetryAttempts ){
         vpnStop(3);
@@ -577,8 +577,8 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
             std::this_thread::sleep_for(std::chrono::seconds(3));
             retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1007, "Failed to get vpn NetId.", "tun2socks start failed"); }, 3, 3000);
             logInfo("netsh command start");
-            // netshCommand1();
-            // netshCommand2();
+            netshCommand1();
+            netshCommand2();
             logInfo("netsh command end");
         } catch (const VpnException& e) {
             logError("netsh command failed: " + std::string(e.what()));
@@ -656,17 +656,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         case WM_POWERBROADCAST:
             if (wParam == PBT_APMRESUMESUSPEND) {
                 if (connected) {
-                    logInfo("System resumed from suspend. connect is true, start to check all process");
-                    // check all process
-                    // if not running, restart all process
-                    if (!areAllProcessesRunning()) {
-                        logInfo("One or more processes are not running. Restarting VPN.");
-                        disconnectVpn();
-                        connectVpn(currentVpnProcess.ip, currentVpnProcess.port, currentVpnProcess.uuid, currentVpnProcess.method, currentVpnProcess.global);
-                    } else {
-                        logInfo("All processes are running.");
-                    }
-                    
+                    logInfo("System resumed from suspend. connect is true, reconnect vpn");
+                    disconnectVpn();
+                    connectVpn(currentVpnProcess.ip, currentVpnProcess.port, currentVpnProcess.uuid, currentVpnProcess.method, currentVpnProcess.global);
                 }
             }
             break;
@@ -746,7 +738,7 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
             logError("getaddrinfo failed: " + std::to_string(iResult));
             errorCode = 1003;
             errorMessage = "getaddrinfo failed";
-            errorDetails = "Error parsing domain name"
+            errorDetails = "Error parsing domain name";
             WSACleanup();
         } else {
             char ipStr[INET_ADDRSTRLEN];
@@ -779,7 +771,7 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
         }
     }
 
-    logInfo("Start vpn end!")
+    logInfo("Start vpn end!");
     
     json resultJson;
     resultJson["errorCode"] = errorCode;
