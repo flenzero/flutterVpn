@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <tlhelp32.h>
 #include <unordered_map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -25,8 +26,21 @@
 using json = nlohmann::json;
 using ordered_json = nlohmann::ordered_json;
 
+struct vpnProcessInfo {
+    std::string ip;
+    int port;
+    std::string uuid;
+    std::string method;
+    std::string netID;
+    bool global;
+};
+
+std::mutex processMutex;
+vpnProcessInfo currentVpnProcess;
+
 int sky_port = 55655;
 bool vpnStopping = false;
+bool vpnConnected = false;
 bool connected = false;
 bool isSuspending = false;
 int sslocalRetry = 0;
@@ -36,12 +50,15 @@ PROCESS_INFORMATION sslocal1Process;
 PROCESS_INFORMATION tun2socksProcess;
 json vpnConfig;
 
+std::map<std::string, std::vector<DWORD>> processMap;
+std::mutex processMapMutex;
+
 void logInfo(const std::string& message) {
-    std::cout << "INFO: " << message << std::endl;
+    std::cout << "[INFO]:  " << message << std::endl;
 }
 
 void logError(const std::string& message) {
-    std::cerr << "ERROR: " << message << std::endl;
+    std::cerr << "[ERROR]:  " << message << std::endl;
 }
 
 std::string getEnvVar(const std::string& var) {
@@ -327,6 +344,17 @@ std::vector<PROCESSENTRY32> GetChildProcesses(DWORD parentProcessId) {
     return childProcesses;
 }
 
+void GetAllChildProcessIDs(DWORD parentProcessId, std::map<DWORD, bool>& allChildProcessIDs) {
+    std::vector<PROCESSENTRY32> childProcesses = GetChildProcesses(parentProcessId);
+
+    for (const auto& child : childProcesses) {
+        if (allChildProcessIDs.find(child.th32ProcessID) == allChildProcessIDs.end()) {
+            allChildProcessIDs[child.th32ProcessID] = true;
+            GetAllChildProcessIDs(child.th32ProcessID, allChildProcessIDs);
+        }
+    }
+}
+
 void TerminateProcessTree(PROCESS_INFORMATION& processInfo) {
     DWORD parentProcessId = processInfo.dwProcessId;
     
@@ -365,21 +393,55 @@ void netshCommand2() {
     startProcess(processInfo, executable, args);
 }
 
-void monitorProcess(PROCESS_INFORMATION& processInfo, const std::function<void(int, const std::string&)>& exitHandler) {
-    while (true) {
-        DWORD exitCode;
-        if (GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
-            if (exitCode != STILL_ACTIVE) {
-                logInfo("Process " + std::to_string(processInfo.dwProcessId) + " exited with code " + std::to_string(exitCode));
-                CloseHandle(processInfo.hProcess);
-                exitHandler(exitCode, "SIGTERM");
+void monitorProcess(PROCESS_INFORMATION& processInfo, const std::string& processName, const std::function<void(int, const std::string&)>& exitHandler) {
+    std::vector<DWORD> processIDs;
+
+    try {
+        Sleep(3000);
+
+        std::map<DWORD, bool> processedProcessIDs;
+        processedProcessIDs[processInfo.dwProcessId] = true;
+
+        GetAllChildProcessIDs(processInfo.dwProcessId, processedProcessIDs);
+
+        for (const auto& entry : processedProcessIDs) {
+            processIDs.push_back(entry.first);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(processMapMutex);
+            if (processMap.find(processName) == processMap.end()) {
+                processMap[processName] = processIDs;
+            } else {
+                processMap[processName].insert(processMap[processName].end(), processIDs.begin(), processIDs.end());
+            }
+        }
+
+        while (true) {
+            DWORD exitCode;
+            if (GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
+                if (exitCode != STILL_ACTIVE) {
+                    logInfo("Process " + std::to_string(processInfo.dwProcessId) + " exited with code " + std::to_string(exitCode));
+                    CloseHandle(processInfo.hProcess);
+
+                    for (DWORD pid : processIDs) {
+                        HANDLE hChildProcess = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+                        if (hChildProcess) {
+                            CloseHandle(hChildProcess);
+                        }
+                    }
+
+                    exitHandler(exitCode, "SIGTERM");
+                    break;
+                }
+            } else {
+                exitHandler(3, "LOST");
                 break;
             }
-        } else {
-            exitHandler(3, "LOST");
-            break;
+            Sleep(1000);
         }
-        Sleep(1000);
+    } catch (const VpnException& e) {
+        logError("Failed to handle process monitoring: " + std::string(e.what()));
     }
 }
 
@@ -432,7 +494,7 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
     std::wstring execProcess = _path + L"\\core\\sslocal.exe";
 
     if (startProcess(sslocal1Process, execProcess, args)) {
-        std::thread monitorThread(monitorProcess, std::ref(sslocal1Process), 
+        std::thread monitorThread(monitorProcess, std::ref(sslocal1Process), wstringToString(execProcess),
             std::bind(handleSslocalExit, std::placeholders::_1, std::placeholders::_2, ip, port, password, method, netID, global));
         monitorThread.detach();
     }
@@ -446,8 +508,8 @@ void handleTun2SocksExit(int code, const std::string& signal, const std::string&
         Sleep(waitTime);
         startTun2Socks(netID);
         logInfo("netsh command start");
-        netshCommand1();
-        netshCommand2();
+        // netshCommand1();
+        // netshCommand2();
         logInfo("netsh command end");
     } else if ( tun2socksRetry >= maxRetryAttempts ){
         vpnStop(3);
@@ -472,7 +534,7 @@ void startTun2Socks(const std::string& netID) {
     std::wstring execProcess = _path + L"\\core\\tun2socks.exe";
 
     if (startProcess(tun2socksProcess, execProcess, args)) {
-        std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess), 
+        std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess), wstringToString(execProcess),
             std::bind(handleTun2SocksExit, std::placeholders::_1, std::placeholders::_2, netID));
         monitorThread.detach();
     }
@@ -497,16 +559,17 @@ std::string removeNullChars(const std::string& str) {
 }
 
 void connectVpn(const std::string& ip, int port, const std::string& uuid, const std::string& method, bool global) {
+    std::lock_guard<std::mutex> lock(processMutex);
     try {
         std::string netID = getNetID();
         netID = removeNullChars(netID);
         logInfo("vpn connect start");
         logInfo("@@@ " + netID);
         vpnConfig["netID"] = netID;
-        sslocalRetry = 0;
-        tun2socksRetry = 0;
-        sky_port = getRandomInt(5000, 60000);
-        logInfo("sky_port: " + std::to_string(sky_port));
+
+        currentVpnProcess = { ip, port, uuid, method, netID, global };
+        vpnConnected = true;
+
         startSslocal1(ip, port, uuid, method, netID, global);
         startTun2Socks(netID);
 
@@ -514,8 +577,8 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
             std::this_thread::sleep_for(std::chrono::seconds(3));
             retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1010, "vpn NetID not found"); }, 2, 3000);
             logInfo("netsh command start");
-            netshCommand1();
-            netshCommand2();
+            // netshCommand1();
+            // netshCommand2();
             logInfo("netsh command end");
         } catch (const VpnException& e) {
             logError("netsh command failed: " + std::string(e.what()));
@@ -525,8 +588,10 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
 
         logInfo("VPN connected successfully");
     } catch (const VpnException& ) {
+        vpnConnected = false;
         throw;
     } catch (const std::exception& e) {
+        vpnConnected = false;
         throw VpnException(1011, e.what());
     }
 }
@@ -535,22 +600,115 @@ void disconnectVpn() {
     try {
         stopTun2socks();
     } catch (const std::exception& e) {
-        std::cerr << "Failed to stop tun2socks\n";
-        std::cerr << e.what() << "\n";
+        logError("Failed to stop tun2socks");
+        logError(e.what());
     }
     try {
         stopSslocal1();
     } catch (const std::exception& e) {
-        std::cerr << "Failed to stop sslocal1\n";
-        std::cerr << e.what() << "\n";
+        logError("Failed to stop sslocal1");
+        logError(e.what());
     }
     sslocalRetry = 0;
     tun2socksRetry = 0;
+    //clean processMap
+    std::lock_guard<std::mutex> lock(processMapMutex);
+    processMap.clear();
+}
+
+bool areAllProcessesRunning() {
+    std::lock_guard<std::mutex> lock(processMapMutex);
+
+    for (const auto& entry : processMap) {
+        for (DWORD pid : entry.second) {
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE, FALSE, pid);
+            if (hProcess == NULL) {
+                DWORD error = GetLastError();
+                logError("Failed to open process with PID: " + std::to_string(pid) + " (error code: " + std::to_string(error) + ")");
+                if (error == ERROR_ACCESS_DENIED) {
+                    logError("Access denied. Process is running as administrator.");
+                }
+                return false;
+            }
+
+            DWORD exitCode;
+            if (!GetExitCodeProcess(hProcess, &exitCode)) {
+                logError("Failed to get exit code for process with PID: " + std::to_string(pid));
+                CloseHandle(hProcess);
+                return false;
+            }
+
+            if (exitCode != STILL_ACTIVE) {
+                logError("Process with PID: " + std::to_string(pid) + " is not running" + " (exit code: " + std::to_string(exitCode) + ")");
+                CloseHandle(hProcess);
+                return false;
+            }
+
+            CloseHandle(hProcess);
+        }
+    }
+
+    return true;
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_POWERBROADCAST:
+            if (wParam == PBT_APMRESUMESUSPEND) {
+                if (connected) {
+                    logInfo("System resumed from suspend. connect is true, start to check all process");
+                    // check all process
+                    // if not running, restart all process
+                    if (!areAllProcessesRunning()) {
+                        logInfo("One or more processes are not running. Restarting VPN.");
+                        disconnectVpn();
+                        connectVpn(currentVpnProcess.ip, currentVpnProcess.port, currentVpnProcess.uuid, currentVpnProcess.method, currentVpnProcess.global);
+                    } else {
+                        logInfo("All processes are running.");
+                    }
+                    
+                }
+            }
+            break;
+        default:
+            return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+    return 0;
+}
+
+void createPowerMonitorWindow() {
+    const wchar_t* className = L"PowerMonitorClass";
+    WNDCLASS wc = { 0 };
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = className;
+
+    if (!RegisterClass(&wc)) {
+        logError("Failed to register window class in createPowerMonitorWindow.");
+        return;
+    }
+
+    HWND hwnd = CreateWindowEx(0, className, L"Power Monitor", 0, 0, 0, 0, 0, NULL, NULL, GetModuleHandle(NULL), NULL);
+    if (!hwnd) {
+        logError("Failed to create window in createPowerMonitorWindow.");
+        return;
+    }
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
 }
 
 // Function implementations
 const char* vpnStart(const char* tunId, const char* uuid, const char* host, int port, const char* method, int global) {
-    logInfo("VPN START " + std::string(host) + " " + std::to_string(global));
+
+    //start windows bettery monitor
+    std::thread powerMonitorThread(createPowerMonitorWindow);
+    powerMonitorThread.detach();
+
+    logInfo("VPN START ------- host: " + std::string(host) + " global flag: " + std::to_string(global));
     static std::string response;
     if (tun2socksProcess.hProcess != NULL || sslocal1Process.hProcess != NULL) {
         logError("sub process already started");
@@ -570,7 +728,7 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
     WSADATA wsaData;
     int wsaResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (wsaResult != 0) {
-        std::cerr << "WSAStartup failed: " << wsaResult << "\n";
+        logError("WSAStartup failed: " + std::to_string(wsaResult) + "in getaddrinfo");
         errorCode = 1001;
         errorMessage = "Error parsing domain name, WSAStartup failed";
     } else {
@@ -618,7 +776,9 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
             errorDetails = "";
         }
     }
-    std::cout << "Start end\n" << std::endl;
+
+    logInfo("Start vpn end!")
+    
     json resultJson;
     resultJson["errorCode"] = errorCode;
     resultJson["errorMessage"] = errorMessage;

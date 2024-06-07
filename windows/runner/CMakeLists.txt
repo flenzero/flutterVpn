@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(runner LANGUAGES CXX)
 
-# if (MSVC)
-#     add_compile_options(/wd4819)
-# endif()
 set(CMAKE_TOOLCHAIN_FILE "H:/vcpkg/scripts/buildsystems/vcpkg.cmake")
 
 add_executable(${BINARY_NAME} WIN32
@@ -38,3 +35,13 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Ensure the application runs with administrator privileges
+if (WIN32)
+  set_property(TARGET ${BINARY_NAME} APPEND PROPERTY
+    LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest"
+    $<TARGET_FILE_DIR:${BINARY_NAME}>)
+endif()
