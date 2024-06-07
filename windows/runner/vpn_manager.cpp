@@ -115,7 +115,7 @@ std::string generateSSLocalConfig(const std::string& netID, const std::string& i
 
         return configFile;
     } catch (...) {
-        throw VpnException(1003, "Failed to generate SSL local config");
+        throw VpnException(1004, "Failed to generate SSL local config.");
     }
 }
 
@@ -133,7 +133,7 @@ std::vector<std::string> getNetIDs(bool filter = true) {
     PIP_ADAPTER_ADDRESSES pAdapterAddresses = (PIP_ADAPTER_ADDRESSES)malloc(bufferSize);
 
     if (pAdapterAddresses == nullptr) {
-        throw VpnException(1002, "Error allocating memory for adapter info");
+        throw VpnException(1005, "Failed to get NetID.", "Error allocating memory for adapter info.");
     }
 
     ULONG dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAdapterAddresses, &bufferSize);
@@ -141,14 +141,14 @@ std::vector<std::string> getNetIDs(bool filter = true) {
         free(pAdapterAddresses);
         pAdapterAddresses = (PIP_ADAPTER_ADDRESSES)malloc(bufferSize);
         if (pAdapterAddresses == nullptr) {
-            throw VpnException(1002, "Error allocating memory for adapter info");
+            throw VpnException(1005, "Failed to get NetID.", "Error allocating memory for adapter info.");
         }
         dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAdapterAddresses, &bufferSize);
     }
 
     if (dwRetVal != NO_ERROR) {
         free(pAdapterAddresses);
-        throw VpnException(1003, "GetAdaptersAddresses failed");
+        throw VpnException(1005, "Failed to get NetID.", "GetAdaptersAddresses failed.");
     }
 
     PIP_ADAPTER_ADDRESSES pAdapter = pAdapterAddresses;
@@ -187,7 +187,7 @@ std::string getNetID() {
     if (!netIds.empty()) {
         return netIds[0];
     }
-    throw VpnException(1006, "Failed to get NetID");
+    throw VpnException(1005, "Failed to get NetID.", "No network interfaces found.");
 }
 
 int getRandomInt(int min, int max) {
@@ -306,7 +306,7 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
     shExInfo.hInstApp = NULL;
 
     if (!ShellExecuteExW(&shExInfo)) {
-        throw VpnException(1007, "Failed to start process as administrator: " + wstringToString(executable));
+        throw VpnException(1006, "Failed to start core process.", "Failed to start process: " + wstringToString(executable));
     }
 
     processInfo.hProcess = shExInfo.hProcess;
@@ -321,7 +321,7 @@ bool startProcess(PROCESS_INFORMATION& processInfo, const std::wstring& executab
 std::vector<PROCESSENTRY32> GetChildProcesses(DWORD parentProcessId) {
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) {
-        throw VpnException(1008, "Failed to create snapshot");
+        throw VpnException(1008, "Failed to get child process, may not stop process tree proplely", "Error creating snapshot");
     }
 
     PROCESSENTRY32 pe32;
@@ -337,7 +337,7 @@ std::vector<PROCESSENTRY32> GetChildProcesses(DWORD parentProcessId) {
         } while (Process32Next(hSnapshot, &pe32));
     } else {
         CloseHandle(hSnapshot);
-        throw VpnException(1009, "Failed to enumerate processes");
+        throw VpnException(1008, "Failed to get child process, may not stop process tree proplely", "Failed to enumerate processes");
     }
 
     CloseHandle(hSnapshot);
@@ -575,7 +575,7 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
 
         try {
             std::this_thread::sleep_for(std::chrono::seconds(3));
-            retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1010, "vpn NetID not found"); }, 2, 3000);
+            retryOperation([]() { if (!vpnNetIDExist()) throw VpnException(1007, "Failed to get vpn NetId.", "tun2socks start failed"); }, 3, 3000);
             logInfo("netsh command start");
             // netshCommand1();
             // netshCommand2();
@@ -592,7 +592,7 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
         throw;
     } catch (const std::exception& e) {
         vpnConnected = false;
-        throw VpnException(1011, e.what());
+        throw VpnException(1001, e.what());
     }
 }
 
@@ -713,7 +713,7 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
     if (tun2socksProcess.hProcess != NULL || sslocal1Process.hProcess != NULL) {
         logError("sub process already started");
         json resultJson;
-        resultJson["errorCode"] = 1001;
+        resultJson["errorCode"] = 1002;
         resultJson["errorMessage"] = "sub process already started";
         resultJson["errorDetails"] = "";
         response = resultJson.dump();
@@ -729,8 +729,9 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
     int wsaResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (wsaResult != 0) {
         logError("WSAStartup failed: " + std::to_string(wsaResult) + "in getaddrinfo");
-        errorCode = 1001;
-        errorMessage = "Error parsing domain name, WSAStartup failed";
+        errorCode = 1003;
+        errorMessage = "getaddrinfo failed";
+        errorDetails = "Error parsing domain name with WSAStartup failed";
     } else {
         struct addrinfo* addrResult = NULL;
         struct addrinfo hints;
@@ -743,8 +744,9 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
         int iResult = getaddrinfo(host, NULL, &hints, &addrResult);
         if (iResult != 0) {
             logError("getaddrinfo failed: " + std::to_string(iResult));
-            errorCode = 1001;
-            errorMessage = "Error parsing domain name";
+            errorCode = 1003;
+            errorMessage = "getaddrinfo failed";
+            errorDetails = "Error parsing domain name"
             WSACleanup();
         } else {
             char ipStr[INET_ADDRSTRLEN];
