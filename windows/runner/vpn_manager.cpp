@@ -35,7 +35,6 @@ struct vpnProcessInfo {
     bool global;
 };
 
-std::mutex processMutex;
 vpnProcessInfo currentVpnProcess;
 
 int sky_port = 55655;
@@ -51,15 +50,7 @@ PROCESS_INFORMATION tun2socksProcess;
 json vpnConfig;
 
 std::map<std::string, std::vector<DWORD>> processMap;
-std::mutex processMapMutex;
 
-void logInfo(const std::string& message) {
-    std::cout << "[INFO]:  " << message << std::endl;
-}
-
-void logError(const std::string& message) {
-    std::cerr << "[ERROR]:  " << message << std::endl;
-}
 
 std::string getEnvVar(const std::string& var) {
     char* buffer = nullptr;
@@ -83,27 +74,72 @@ std::string getCurrentDirectory() {
     }
 }
 
-std::string generateSSLocalConfig(const std::string& netID, const std::string& ip, int port, const std::string& method, const std::string& password) {
+void logInfo(const std::string& message) {
+    std::ofstream logFile;
+    std::string currentDirectory = getCurrentDirectory();
+    std::string logFilePath = currentDirectory + "\\main_log.txt";
+    logFile.open(logFilePath, std::ios_base::app); 
+    if (logFile.is_open()) {
+        logFile << "[INFO]:  " << message << std::endl;
+        logFile.close();
+    } else {
+        std::cerr << "[ERROR]:  Could not open log file." << std::endl;
+    }
+}
+
+void logError(const std::string& message) {
+    std::ofstream logFile;
+    std::string currentDirectory = getCurrentDirectory();
+    std::string logFilePath = currentDirectory + "\\main_log.txt";
+    logFile.open(logFilePath, std::ios_base::app);
+    if (logFile.is_open()) {
+        logFile << "[ERROR]:  " << message << std::endl;
+        logFile.close();
+    } else {
+        std::cerr << "[ERROR]:  Could not open log file." << std::endl;
+    }
+}
+
+std::string generateSSLocalConfig(const std::string& netID, const std::string& ip, int port, const std::string& method, const std::string& password, bool global) {
     try {
         std::string basePath = getCurrentDirectory();
         std::string configFile = basePath + "\\sslocal.conf";
         ordered_json configJson;
-        configJson["local_address"] = "0.0.0.0";
-        configJson["local_port"] = sky_port;
-        configJson["mode"] = "tcp_and_udp";
-        configJson["outbound_bind_interface"] = netID;
-        configJson["locals"] = json::array({
-            {
-                {"protocol", "dns"},
-                {"local_address", "0.0.0.0"},
-                {"local_port", 53},
-                {"mode", "tcp_and_udp"},
-                {"local_dns_address", "223.5.5.5"},
-                {"local_dns_port", 53},
-                {"remote_dns_address", "99.83.168.226"},
-                {"remote_dns_port", 18888}
-            }
-        });
+
+        if (global) {
+            configJson["local_address"] = "0.0.0.0";
+            configJson["local_port"] = sky_port;
+            configJson["mode"] = "tcp_and_udp";
+            configJson["outbound_bind_interface"] = netID;
+            configJson["locals"] = json::array({
+                {
+                    {"protocol", "dns"},
+                    {"local_address", "0.0.0.0"},
+                    {"local_port", 53},
+                    {"mode", "tcp_and_udp"},
+                    {"local_dns_address", "223.5.5.5"},
+                    {"local_dns_port", 53},
+                    {"remote_dns_address", "99.83.227.52"},
+                    {"remote_dns_port", 18888}
+                }
+            });
+        } else {
+            configJson["local_address"] = "0.0.0.0";
+            configJson["local_port"] = sky_port;
+            configJson["mode"] = "tcp_and_udp";
+            configJson["outbound_bind_interface"] = netID;
+            configJson["locals"] = json::array({
+                {
+                    {"protocol", "fake-dns"},
+                    {"local_address", "0.0.0.0"},
+                    {"local_port", 53},
+                    {"fake_dns_ipv4_network", "192.18.0.0/15"},
+                    {"fake_dns_ipv6_network", "ff10::/64"},
+                    {"fake_dns_record_expire_duration", 10}
+                }
+            });
+        }
+
         configJson["server"] = ip;
         configJson["server_port"] = port;
         configJson["method"] = method;
@@ -409,7 +445,6 @@ void monitorProcess(PROCESS_INFORMATION& processInfo, const std::string& process
         }
 
         {
-            std::lock_guard<std::mutex> lock(processMapMutex);
             if (processMap.find(processName) == processMap.end()) {
                 processMap[processName] = processIDs;
             } else {
@@ -477,7 +512,7 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
     std::wstring _path = stringToWString(getCurrentDirectory());
     std::vector<std::wstring> args;
 
-    std::wstring sslocal_config = stringToWString(generateSSLocalConfig(netID, ip, port, method, password));
+    std::wstring sslocal_config = stringToWString(generateSSLocalConfig(netID, ip, port, method, password, global));
     args.push_back(L"-c");
     args.push_back(sslocal_config);
 
@@ -559,7 +594,6 @@ std::string removeNullChars(const std::string& str) {
 }
 
 void connectVpn(const std::string& ip, int port, const std::string& uuid, const std::string& method, bool global) {
-    std::lock_guard<std::mutex> lock(processMutex);
     try {
         std::string netID = getNetID();
         netID = removeNullChars(netID);
@@ -612,12 +646,10 @@ void disconnectVpn() {
     sslocalRetry = 0;
     tun2socksRetry = 0;
     //clean processMap
-    std::lock_guard<std::mutex> lock(processMapMutex);
     processMap.clear();
 }
 
 bool areAllProcessesRunning() {
-    std::lock_guard<std::mutex> lock(processMapMutex);
 
     for (const auto& entry : processMap) {
         for (DWORD pid : entry.second) {
@@ -657,8 +689,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (wParam == PBT_APMRESUMESUSPEND) {
                 if (connected) {
                     logInfo("System resumed from suspend. connect is true, reconnect vpn");
-                    disconnectVpn();
-                    connectVpn(currentVpnProcess.ip, currentVpnProcess.port, currentVpnProcess.uuid, currentVpnProcess.method, currentVpnProcess.global);
+                    // disconnectVpn();
+                    // connectVpn(currentVpnProcess.ip, currentVpnProcess.port, currentVpnProcess.uuid, currentVpnProcess.method, currentVpnProcess.global);
                 }
             }
             break;
