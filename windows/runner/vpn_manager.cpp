@@ -106,52 +106,77 @@ std::string generateSSLocalConfig(const std::string& netID, const std::string& i
         std::string configFile = basePath + "\\sslocal.conf";
         ordered_json configJson;
 
+        std::string corePath;
+        corePath = basePath + "\\core";
+
+        json configJson;
         if (global) {
-            configJson["local_address"] = "0.0.0.0";
-            configJson["local_port"] = sky_port;
-            configJson["mode"] = "tcp_and_udp";
-            configJson["outbound_bind_interface"] = netID;
-            configJson["locals"] = json::array({
-                {
-                    {"protocol", "dns"},
-                    {"local_address", "0.0.0.0"},
-                    {"local_port", 53},
-                    {"mode", "tcp_and_udp"},
-                    {"local_dns_address", "223.5.5.5"},
-                    {"local_dns_port", 53},
-                    {"remote_dns_address", "99.83.227.52"},
-                    {"remote_dns_port", 18888}
-                }
-            });
+            configJson = {
+                {"local_address", "::"},
+                {"local_port", port},
+                {"mode", "tcp_and_udp"},
+                {"outbound_bind_interface", netID},
+                {"locals", json::array({
+                    {
+                        {"protocol", "dns"},
+                        {"local_address", "::"},
+                        {"local_port", 53},
+                        {"mode", "tcp_and_udp"},
+                        {"local_dns_address", "223.5.5.5"},
+                        {"local_dns_port", 53},
+                        {"remote_dns_address", "99.83.227.52"},
+                        {"remote_dns_port", 18888}
+                    },
+                    {
+                        {"protocol", "tun"},
+                        {"tun_interface_name", "skyline-vpn-ethernet"},
+                        {"tun_interface_address", "10.255.0.1/24"}
+                    }
+                })},
+                {"server", ip},
+                {"server_port", port},
+                {"method", method},
+                {"password", password}
+            };
         } else {
-            configJson["local_address"] = "0.0.0.0";
-            configJson["local_port"] = sky_port;
-            configJson["mode"] = "tcp_and_udp";
-            configJson["outbound_bind_interface"] = netID;
-            configJson["locals"] = json::array({
-                {
-                    {"protocol", "fake-dns"},
-                    {"local_address", "0.0.0.0"},
-                    {"local_port", 53},
-                    {"fake_dns_ipv4_network", "192.18.0.0/15"},
-                    {"fake_dns_ipv6_network", "ff10::/64"},
-                    {"fake_dns_record_expire_duration", 10}
-                }
-            });
+            configJson = {
+                {"local_address", "::"},
+                {"local_port", port},
+                {"mode", "tcp_and_udp"},
+                {"outbound_bind_interface", netID},
+                {"locals", json::array({
+                    {
+                        {"protocol", "fake-dns"},
+                        {"local_address", "::"},
+                        {"local_port", 53},
+                        {"fake_dns_ipv4_network", "192.18.0.0/15"},
+                        {"fake_dns_ipv6_network", "ff10::/64"},
+                        {"fake_dns_database_path", corePath},
+                        {"fake_dns_record_expire_duration", 10}
+                    },
+                    {
+                        {"protocol", "tun"},
+                        {"tun_interface_name", "skyline-vpn-ethernet"},
+                        {"tun_interface_address", "10.255.0.1/24"}
+                    }
+                })},
+                {"server", ip},
+                {"server_port", port},
+                {"method", method},
+                {"password", password}
+            };
         }
 
-        configJson["server"] = ip;
-        configJson["server_port"] = port;
-        configJson["method"] = method;
-        configJson["password"] = password;
-
         std::ofstream configFileStream(configFile);
-        configFileStream << configJson.dump(-1);
+        if (!configFileStream) {
+            throw VpnException(1007, "Failed to open config file for writing.");
+        }
+        configFileStream << configJson.dump(4);
         configFileStream.close();
 
         return configFile;
-    } catch (...) {
-        throw VpnException(1004, "Failed to generate SSL local config.");
+    } catch (const std::exception& e) {
+        throw VpnException(1004, "Failed to generate SSL local config.", e.what());
     }
 }
 
@@ -164,6 +189,9 @@ std::string ConvertWCHARToString(const WCHAR* wStr) {
 
 std::vector<std::string> getNetIDs(bool filter = true) {
     std::vector<std::string> netIds;
+    std::vector<std::string> wifiIds;
+    std::vector<std::string> adslIds;
+    std::vector<std::string> otherIds;
 
     ULONG bufferSize = 15000;
     PIP_ADAPTER_ADDRESSES pAdapterAddresses = (PIP_ADAPTER_ADDRESSES)malloc(bufferSize);
@@ -187,24 +215,53 @@ std::vector<std::string> getNetIDs(bool filter = true) {
         throw VpnException(1005, "Failed to get NetID.", "GetAdaptersAddresses failed.");
     }
 
+    std::vector<std::string> filterNetIDAry = { "virtual", "tap", "vpn", "tun", "meta", "wsl", "radmin", "vethernet", "switch", "vmware", "docker", "vbox", "hyper-v", "vm", "vnic", "vnet", "skyline", "loopback", "veth", "default" };
+    std::vector<std::string> filterWifiAry = { "wifi", "wlan", "无线", "wi-fi", "wire" };
+    std::vector<std::string> filterADSLAry = { "宽带", "adsl", "ppp" };
+
     PIP_ADAPTER_ADDRESSES pAdapter = pAdapterAddresses;
     while (pAdapter) {
-        if (pAdapter->OperStatus == IfOperStatusUp) { 
+        if (pAdapter->OperStatus == IfOperStatusUp) {
             std::string adapterName = ConvertWCHARToString(pAdapter->FriendlyName);
-
             std::string adapterDescription = ConvertWCHARToString(pAdapter->Description);
+
+            // Convert adapterDescription to lower case
             std::for_each(adapterDescription.begin(), adapterDescription.end(), [](char& c) {
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             });
 
-            if (!filter || (adapterDescription.find("virtual") == std::string::npos &&
-                            adapterDescription.find("tap") == std::string::npos &&
-                            adapterDescription.find("vpn") == std::string::npos &&
-                            adapterDescription.find("tun") == std::string::npos &&
-                            adapterDescription.find("meta") == std::string::npos &&
-                            adapterDescription.find("vethernet") == std::string::npos &&
-                            adapterDescription.find("radmin") == std::string::npos)) {
-                netIds.push_back(adapterName);
+            bool isExcluded = false;
+            for (const std::string& filter : filterNetIDAry) {
+                if (adapterDescription.find(filter) != std::string::npos) {
+                    isExcluded = true;
+                    break;
+                }
+            }
+
+            if (!filter || !isExcluded) {
+                bool outputWifiAddress = false;
+                for (const std::string& filter : filterWifiAry) {
+                    if (adapterDescription.find(filter) != std::string::npos) {
+                        outputWifiAddress = true;
+                        break;
+                    }
+                }
+
+                bool outputADSLAddress = false;
+                for (const std::string& filter : filterADSLAry) {
+                    if (adapterDescription.find(filter) != std::string::npos) {
+                        outputADSLAddress = true;
+                        break;
+                    }
+                }
+
+                if (outputWifiAddress) {
+                    wifiIds.push_back(adapterName);
+                } else if (outputADSLAddress) {
+                    adslIds.push_back(adapterName);
+                } else {
+                    otherIds.push_back(adapterName);
+                }
             }
         }
 
@@ -214,6 +271,11 @@ std::vector<std::string> getNetIDs(bool filter = true) {
     if (pAdapterAddresses) {
         free(pAdapterAddresses);
     }
+
+    // Combine the IDs with WiFi first, then ADSL, then other
+    netIds.insert(netIds.end(), wifiIds.begin(), wifiIds.end());
+    netIds.insert(netIds.end(), adslIds.begin(), adslIds.end());
+    netIds.insert(netIds.end(), otherIds.begin(), otherIds.end());
 
     return netIds;
 }
@@ -535,53 +597,53 @@ void startSslocal1(const std::string& ip, int port, const std::string& password,
     }
 }
 
-void handleTun2SocksExit(int code, const std::string& signal, const std::string& netID) {
-    if (connected && !isSuspending && tun2socksRetry < maxRetryAttempts) {
-        tun2socksRetry++;
-        int waitTime = 6000 * tun2socksRetry; 
-        logInfo("Retrying startTun2Socks in " + std::to_string(waitTime) + "ms (Attempt " + std::to_string(tun2socksRetry) + "/" + std::to_string(maxRetryAttempts) + ")");
-        Sleep(waitTime);
-        startTun2Socks(netID);
-        logInfo("netsh command start");
-        netshCommand1();
-        netshCommand2();
-        logInfo("netsh command end");
-    } else if ( tun2socksRetry >= maxRetryAttempts ){
-        vpnStop(3);
-    }
-}
+// void handleTun2SocksExit(int code, const std::string& signal, const std::string& netID) {
+//     if (connected && !isSuspending && tun2socksRetry < maxRetryAttempts) {
+//         tun2socksRetry++;
+//         int waitTime = 6000 * tun2socksRetry; 
+//         logInfo("Retrying startTun2Socks in " + std::to_string(waitTime) + "ms (Attempt " + std::to_string(tun2socksRetry) + "/" + std::to_string(maxRetryAttempts) + ")");
+//         Sleep(waitTime);
+//         startTun2Socks(netID);
+//         logInfo("netsh command start");
+//         netshCommand1();
+//         netshCommand2();
+//         logInfo("netsh command end");
+//     } else if ( tun2socksRetry >= maxRetryAttempts ){
+//         vpnStop(3);
+//     }
+// }
 
-void startTun2Socks(const std::string& netID) {
-    std::wstring _path = stringToWString(getCurrentDirectory());
-    std::vector<std::wstring> args;
+// void startTun2Socks(const std::string& netID) {
+//     std::wstring _path = stringToWString(getCurrentDirectory());
+//     std::vector<std::wstring> args;
 
-    args.push_back(L"-device");
-    args.push_back(L"skyline-vpn-ethernet");
-    args.push_back(L"-proxy");
-    args.push_back(L"socks5://127.0.0.1:" + std::to_wstring(sky_port));
-    args.push_back(L"-interface");
-    args.push_back(stringToWString(netID));
+//     args.push_back(L"-device");
+//     args.push_back(L"skyline-vpn-ethernet");
+//     args.push_back(L"-proxy");
+//     args.push_back(L"socks5://127.0.0.1:" + std::to_wstring(sky_port));
+//     args.push_back(L"-interface");
+//     args.push_back(stringToWString(netID));
 
-    if (vpnStopping) {
-        return;
-    }
+//     if (vpnStopping) {
+//         return;
+//     }
 
-    std::wstring execProcess = _path + L"\\core\\tun2socks.exe";
+//     std::wstring execProcess = _path + L"\\core\\tun2socks.exe";
 
-    if (startProcess(tun2socksProcess, execProcess, args)) {
-        std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess), wstringToString(execProcess),
-            std::bind(handleTun2SocksExit, std::placeholders::_1, std::placeholders::_2, netID));
-        monitorThread.detach();
-    }
-}
+//     if (startProcess(tun2socksProcess, execProcess, args)) {
+//         std::thread monitorThread(monitorProcess, std::ref(tun2socksProcess), wstringToString(execProcess),
+//             std::bind(handleTun2SocksExit, std::placeholders::_1, std::placeholders::_2, netID));
+//         monitorThread.detach();
+//     }
+// }
 
 void stopSslocal1() {
     TerminateProcessTree(sslocal1Process);
 }
 
-void stopTun2socks() {
-    TerminateProcessTree(tun2socksProcess);
-}
+// void stopTun2socks() {
+//     TerminateProcessTree(tun2socksProcess);
+// }
 
 std::string removeNullChars(const std::string& str) {
     std::string cleanedStr;
@@ -605,7 +667,7 @@ void connectVpn(const std::string& ip, int port, const std::string& uuid, const 
         vpnConnected = true;
 
         startSslocal1(ip, port, uuid, method, netID, global);
-        startTun2Socks(netID);
+        // startTun2Socks(netID);
 
         try {
             std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -734,7 +796,8 @@ const char* vpnStart(const char* tunId, const char* uuid, const char* host, int 
 
     logInfo("VPN START ------- host: " + std::string(host) + " global flag: " + std::to_string(global));
     static std::string response;
-    if (tun2socksProcess.hProcess != NULL || sslocal1Process.hProcess != NULL) {
+    // if (tun2socksProcess.hProcess != NULL || sslocal1Process.hProcess != NULL) {
+    if (sslocal1Process.hProcess != NULL) {
         logError("sub process already started");
         json resultJson;
         resultJson["errorCode"] = 1002;
