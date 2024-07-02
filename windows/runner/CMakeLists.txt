@@ -3,6 +3,9 @@ project(runner LANGUAGES CXX)
 
 set(CMAKE_TOOLCHAIN_FILE "H:/vcpkg/scripts/buildsystems/vcpkg.cmake")
 
+# 使用 vcpkg 安装的库
+find_package(sentry-native CONFIG REQUIRED)
+
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
@@ -25,6 +28,9 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MINOR=${FLUTT
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_PATCH=${FLUTTER_VERSION_PATCH}")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_BUILD=${FLUTTER_VERSION_BUILD}")
 target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
+
+# 添加 Sentry 库和头文件路径
+target_link_libraries(${BINARY_NAME} PRIVATE sentry::sentry)
 
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
